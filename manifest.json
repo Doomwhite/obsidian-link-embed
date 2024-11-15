@@ -1,10 +1,10 @@
 {
-	"id": "obsidian-link-embed",
-	"name": "Link Embed",
+	"id": "obsidian-link-embed-doomwhite",
+	"name": "Link Embed (Altered by DooMWhite)",
 	"version": "2.0.12",
 	"minAppVersion": "0.12.0",
 	"description": "This plugin allows you to convert URLs in your notes into embedded previews.",
-	"author": "SErAphLi",
-	"authorUrl": "https://github.com/Seraphli",
+	"author": "DooMWhite",
+	"authorUrl": "https://github.com/DooMWhite",
 	"isDesktopOnly": false
 }
