@@ -1,25 +1,29 @@
+import Mustache from 'mustache';
 import {
 	Editor,
-	Notice,
-	Plugin,
+	FileSystemAdapter,
 	MarkdownView,
-	EditorPosition,
-	stringifyYaml,
+	Notice,
 	parseYaml,
+	Plugin
 } from 'obsidian';
-import Mustache from 'mustache';
-import { parsers } from './parser';
 import {
+	EmbedInfo,
 	HTMLTemplate,
+	MarkdownTemplate,
 	REGEX,
 	SPINNER,
-	MarkdownTemplate,
-	EmbedInfo,
 } from './constants';
-import type { ObsidianLinkEmbedPluginSettings } from './settings';
-import { ObsidianLinkEmbedSettingTab, DEFAULT_SETTINGS } from './settings';
 import { ExEditor, Selected } from './exEditor';
+import { parsers } from './parser';
+import type { ObsidianLinkEmbedPluginSettings } from './settings';
+import { DEFAULT_SETTINGS, ObsidianLinkEmbedSettingTab } from './settings';
 import EmbedSuggest from './suggest';
+import * as https from 'https';
+import * as fs from 'fs';
+import * as path from 'path';
+import crypto from 'crypto';
+
 
 interface PasteInfo {
 	trigger: boolean;
@@ -116,7 +120,7 @@ export default class ObsidianLinkEmbedPlugin extends Plugin {
 		this.addSettingTab(new ObsidianLinkEmbedSettingTab(this.app, this));
 	}
 
-	onunload() {}
+	onunload() { }
 
 	async loadSettings() {
 		this.settings = Object.assign(
@@ -143,6 +147,14 @@ export default class ObsidianLinkEmbedPlugin extends Plugin {
 		return true;
 	}
 
+	getVaultPath() {
+		let adapter = this.app.vault.adapter;
+		if (adapter instanceof FileSystemAdapter) {
+			return adapter.getBasePath();
+		}
+		return '';
+	}
+
 	async embedUrl(
 		editor: Editor,
 		selected: Selected,
@@ -150,7 +162,7 @@ export default class ObsidianLinkEmbedPlugin extends Plugin {
 		inPlace: boolean = this.settings.inPlace,
 	) {
 		let url = selected.text;
-		// replace selection if in place
+		// Replace selection if in place
 		if (selected.can && inPlace) {
 			editor.replaceRange(
 				'',
@@ -158,7 +170,8 @@ export default class ObsidianLinkEmbedPlugin extends Plugin {
 				selected.boundary.end,
 			);
 		}
-		// put a dummy preview here first
+
+		// Put a dummy preview here first
 		const cursor = editor.getCursor();
 		const lineText = editor.getLine(cursor.line);
 		let template = MarkdownTemplate;
@@ -181,7 +194,8 @@ export default class ObsidianLinkEmbedPlugin extends Plugin {
 			}) + '\n';
 		editor.replaceSelection(dummyEmbed);
 		const endCursor = editor.getCursor();
-		// if we can fetch result, we can replace the embed with true content
+
+		// Fetch image and handle local storage
 		let idx = 0;
 		while (idx < selectedParsers.length) {
 			const selectedParser = selectedParsers[idx];
@@ -195,36 +209,161 @@ export default class ObsidianLinkEmbedPlugin extends Plugin {
 				if (this.settings.debug) {
 					console.log('Link Embed: meta data', data);
 				}
-				const escapedData = {
-					title: data.title.replace(/"/g, '\\"'),
-					image: data.image,
-					description: data.description.replace(/"/g, '\\"'),
-					url: data.url,
-				};
-				const embed = Mustache.render(template, escapedData) + '\n';
-				if (this.settings.delay > 0) {
-					await new Promise((f) =>
-						setTimeout(f, this.settings.delay),
-					);
+
+				// Download the image to the vault
+
+				try {
+					const imageUrl = data.image;
+					const finalPath = `${this.getVaultPath()}/attachments/`; // Final desired path
+
+					const tempPath = path.join(`${this.getVaultPath()}/attachments/`, 'temp_image'); // Temporary path (this can be anything)
+					const imageName = await this.downloadImage(imageUrl, tempPath, finalPath);
+					await this.deleteFile(tempPath);
+
+					const localUrl = `http://localhost:8181/${imageName}`;
+
+					// Prepare the escaped data
+					const escapedData = {
+						title: data.title.replace(/"/g, '\\"'),
+						image: localUrl,  // Use local URL for image
+						description: data.description.replace(/"/g, '\\"'),
+						url: data.url,
+					};
+
+					// Render the final embed
+					const embed = Mustache.render(template, escapedData) + '\n';
+					if (this.settings.delay > 0) {
+						await new Promise((f) =>
+							setTimeout(f, this.settings.delay),
+						);
+					}
+
+					// Before replacing, check whether the dummy preview is deleted or modified
+					const dummy = editor.getRange(startCursor, endCursor);
+					if (dummy == dummyEmbed) {
+						editor.replaceRange(embed, startCursor, endCursor);
+					} else {
+						new Notice(
+							`Dummy preview has been deleted or modified. Replacing is cancelled.`,
+						);
+					}
+					break;
+				} catch (error) {
+					console.log('Link Embed: error', error);
+					idx += 1;
+					if (idx === selectedParsers.length) {
+						this.errorNotice();
+					}
 				}
-				// before replacing, check whether dummy is deleted or modified
-				const dummy = editor.getRange(startCursor, endCursor);
-				if (dummy == dummyEmbed) {
-					editor.replaceRange(embed, startCursor, endCursor);
-				} else {
-					new Notice(
-						`Dummy preview has been deleted or modified. Replacing is cancelled.`,
-					);
-				}
-				break;
 			} catch (error) {
-				console.log('Link Embed: error', error);
-				idx += 1;
-				if (idx === selectedParsers.length) {
-					this.errorNotice();
-				}
+				new Notice(error);
+				console.log(error);
+				return;
 			}
+
 		}
+	}
+
+	/**
+	 * Generates a SHA-512 hash of a file's contents.
+	 *
+	 * @param filePath - The path to the file.
+	 * @returns A Promise that resolves to the SHA-512 hash string.
+	 */
+	async computeFileHash(filePath: string): Promise<string> {
+		return new Promise((resolve, reject) => {
+			const hash = crypto.createHash('sha512');
+			const stream = fs.createReadStream(filePath);
+
+			stream.on('data', (chunk) => hash.update(chunk));
+			stream.on('end', () => resolve(hash.digest('hex')));
+			stream.on('error', (err) => reject(err));
+		});
+	}
+
+	deleteFile(filePath: string): Promise<void> {
+		return new Promise((resolve, reject) => {
+			// Check if the file exists before attempting to delete
+			fs.access(filePath, fs.constants.F_OK, (err) => {
+				if (err) {
+					if (err.code === 'ENOENT') {
+						console.warn(`File does not exist: ${filePath}`);
+						resolve(); // File doesn't exist, so consider it "deleted"
+					} else {
+						console.error(`Error accessing file: ${err.message}`);
+						reject(err); // Some other error accessing the file
+					}
+					return;
+				}
+
+				// File exists, proceed to delete
+				fs.unlink(filePath, (err) => {
+					if (err) {
+						console.error(`Error deleting file: ${err.message}`);
+						reject(err); // Error deleting the file
+					} else {
+						console.log(`File deleted successfully: ${filePath}`);
+						resolve(); // Successfully deleted the file
+					}
+				});
+			});
+		});
+	}
+
+	// Helper function to download the image and save it to the vault attachments folder
+	async downloadImage(url: string, tempPath: string, finalPath: string): Promise<string> {
+		console.log('tempPath', tempPath);
+
+		return new Promise((resolve, reject) => {
+			https.get(url, (response) => {
+				console.log('response', response);
+				// Get the file extension from the Content-Type header (e.g., image/jpeg or image/png)
+				const contentType = response.headers['content-type'];
+				const extension = contentType ? contentType.split('/')[1] : 'jpg';  // Default to jpg if not found
+				console.log('extension', extension);
+
+				// Create a temporary file stream to download the image
+				const tempFile = fs.createWriteStream(tempPath);
+
+				response.pipe(tempFile);
+				tempFile.on('finish', async () => {
+					tempFile.close(async () => {
+						console.log(`Image downloaded to temporary path: ${tempPath}`);
+
+						// Generate the final file name using the current timestamp and the file extension
+						const fileHash = await this.computeFileHash(tempPath);
+						const finalFileName = `${fileHash}.${extension}`;
+						console.log('finalFileName', finalFileName);
+
+						// Define the final path with the generated name
+						const finalFilePath = path.join(finalPath, finalFileName);
+						console.log('finalFilePath', finalFilePath);
+
+						// Ensure that the final directory exists
+						fs.mkdir(path.dirname(finalFilePath), { recursive: true }, (err) => {
+							if (err) {
+								console.error('Error creating directory:', err);
+								reject(err);
+							} else {
+								// Check if image exists locally, if not, rename and save it
+								fs.copyFile(tempPath, finalFilePath, (err) => {
+									if (err) {
+										console.error('Error renaming the file:', err);
+										reject(err);
+									} else {
+										console.log(`Image renamed and saved to: ${finalFilePath}`);
+										resolve(finalFileName); // Return just the filename
+									}
+								});
+							}
+						});
+					});
+				});
+			}).on('error', (err) => {
+				fs.unlink(tempPath, () => { }); // delete the file if there's an error
+				reject(err);
+			});
+		});
 	}
 
 	public static isUrl(text: string): boolean {
