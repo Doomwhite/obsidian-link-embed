@@ -12,6 +12,7 @@
   "author": "SErAphLi",
   "license": "MIT",
   "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
     "@types/he": "^1.1.2",
     "@types/lodash": "^4.14.181",
     "@types/mustache": "^4.1.2",
@@ -26,6 +27,8 @@
     "typescript": "^5.6.3"
   },
   "dependencies": {
+    "axios": "^1.7.7",
+    "fs-extra": "^11.2.0",
     "he": "^1.2.0"
   }
 }

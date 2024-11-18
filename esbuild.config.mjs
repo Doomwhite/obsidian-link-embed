@@ -45,7 +45,7 @@ esbuild.build({
   ],
   format: 'cjs',
   watch: !prod,
-  target: 'es2016', // Adjust target based on your plugin needs
+  target: 'es2018', // Adjust target based on your plugin needs
   logLevel: "info",
   sourcemap: prod ? false : 'inline',
   treeShaking: true,

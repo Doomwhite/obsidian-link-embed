@@ -1,3 +1,6 @@
+import crypto from 'crypto';
+import * as fs from 'fs';
+import * as https from 'https';
 import Mustache from 'mustache';
 import {
 	Editor,
@@ -7,6 +10,7 @@ import {
 	parseYaml,
 	Plugin
 } from 'obsidian';
+import * as path from 'path';
 import {
 	EmbedInfo,
 	HTMLTemplate,
@@ -19,11 +23,7 @@ import { parsers } from './parser';
 import type { ObsidianLinkEmbedPluginSettings } from './settings';
 import { DEFAULT_SETTINGS, ObsidianLinkEmbedSettingTab } from './settings';
 import EmbedSuggest from './suggest';
-import * as https from 'https';
-import * as fs from 'fs';
-import * as path from 'path';
-import crypto from 'crypto';
-
+import ImageDownloader from 'utils/image-downloader';
 
 interface PasteInfo {
 	trigger: boolean;
@@ -217,8 +217,8 @@ export default class ObsidianLinkEmbedPlugin extends Plugin {
 					const finalPath = `${this.getVaultPath()}/attachments/`; // Final desired path
 
 					const tempPath = path.join(`${this.getVaultPath()}/attachments/`, 'temp_image'); // Temporary path (this can be anything)
-					const imageName = await this.downloadImage(imageUrl, tempPath, finalPath);
-					await this.deleteFile(tempPath);
+      				const imageDownloader = new ImageDownloader(tempPath)
+					const imageName = await imageDownloader.downloadImage(imageUrl, finalPath);
 
 					const localUrl = `http://localhost:8181/${imageName}`;
 
@@ -278,35 +278,6 @@ export default class ObsidianLinkEmbedPlugin extends Plugin {
 			stream.on('data', (chunk) => hash.update(chunk));
 			stream.on('end', () => resolve(hash.digest('hex')));
 			stream.on('error', (err) => reject(err));
-		});
-	}
-
-	deleteFile(filePath: string): Promise<void> {
-		return new Promise((resolve, reject) => {
-			// Check if the file exists before attempting to delete
-			fs.access(filePath, fs.constants.F_OK, (err) => {
-				if (err) {
-					if (err.code === 'ENOENT') {
-						console.warn(`File does not exist: ${filePath}`);
-						resolve(); // File doesn't exist, so consider it "deleted"
-					} else {
-						console.error(`Error accessing file: ${err.message}`);
-						reject(err); // Some other error accessing the file
-					}
-					return;
-				}
-
-				// File exists, proceed to delete
-				fs.unlink(filePath, (err) => {
-					if (err) {
-						console.error(`Error deleting file: ${err.message}`);
-						reject(err); // Error deleting the file
-					} else {
-						console.log(`File deleted successfully: ${filePath}`);
-						resolve(); // Successfully deleted the file
-					}
-				});
-			});
 		});
 	}
 
